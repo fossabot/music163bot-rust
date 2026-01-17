@@ -102,9 +102,16 @@ impl MusicApi {
         // Use rustls TLS for better compatibility
         client_builder = client_builder.use_rustls_tls();
 
+        // Performance optimizations
+        client_builder = client_builder
+            .tcp_nodelay(true)
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .pool_max_idle_per_host(32)
+            .connect_timeout(std::time::Duration::from_secs(10));
+
         // Add user agent
         client_builder = client_builder
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
 
         let client = client_builder.build().unwrap();
 
@@ -293,20 +300,26 @@ impl MusicApi {
         }
 
         let bytes = response.bytes().await?;
+        let output_path_buf = output_path.to_path_buf();
 
-        // Load and resize image
-        let img = image::load_from_memory(&bytes)
-            .map_err(|e| BotError::MusicApi(format!("Failed to decode image: {}", e)))?;
+        // Offload image processing to a blocking thread to avoid blocking the async runtime
+        tokio::task::spawn_blocking(move || {
+            // Load and resize image
+            let img = image::load_from_memory(&bytes)
+                .map_err(|e| BotError::MusicApi(format!("Failed to decode image: {}", e)))?;
 
-        // Resize to 320x320 with black padding (like the original Go project)
-        let resized = resize_image_with_padding(img, 320, 320);
+            // Resize to 320x320 with black padding (like the original Go project)
+            let resized = resize_image_with_padding(img, 320, 320);
 
-        // Save as JPEG
-        resized
-            .save_with_format(output_path, ImageFormat::Jpeg)
-            .map_err(|e| BotError::MusicApi(format!("Failed to save image: {}", e)))?;
+            // Save as JPEG
+            resized
+                .save_with_format(&output_path_buf, ImageFormat::Jpeg)
+                .map_err(|e| BotError::MusicApi(format!("Failed to save image: {}", e)))?;
 
-        Ok(())
+            Ok(())
+        })
+        .await
+        .map_err(|e| BotError::MusicApi(format!("Image processing task panicked: {}", e)))?
     }
 }
 

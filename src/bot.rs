@@ -124,7 +124,7 @@ pub async fn run(config: Config) -> Result<()> {
         config: config.clone(),
         database,
         music_api,
-        download_semaphore: Arc::new(tokio::sync::Semaphore::new(4)), // Limit concurrent downloads
+        download_semaphore: Arc::new(tokio::sync::Semaphore::new(10)), // 增加到 10 个并发下载
         bot_username,
     });
 
@@ -136,6 +136,9 @@ pub async fn run(config: Config) -> Result<()> {
 
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![bot_state])
+        .default_handler(|upd| async move {
+            tracing::debug!("Unhandled update: {:?}", upd);
+        })
         .enable_ctrlc_handler()
         .build()
         .dispatch()
@@ -146,18 +149,28 @@ pub async fn run(config: Config) -> Result<()> {
 async fn handle_message(bot: Bot, msg: Message, state: Arc<BotState>) -> ResponseResult<()> {
     if let MessageKind::Common(common) = &msg.kind {
         if let teloxide::types::MediaKind::Text(text_content) = &common.media_kind {
-            let text = &text_content.text;
-            // Handle commands
-            if text.starts_with('/') {
-                handle_command(&bot, &msg, &state, text).await?;
-            }
-            // Handle music URLs
-            else if text.contains("music.163.com")
-                || text.contains("163cn.tv")
-                || text.contains("163cn.link")
-            {
-                handle_music_url(&bot, &msg, &state, text).await?;
-            }
+            let text = text_content.text.clone();
+            let bot = bot.clone();
+            let msg = msg.clone();
+            let state = state.clone();
+
+            tokio::spawn(async move {
+                // Handle commands
+                if text.starts_with('/') {
+                    if let Err(e) = handle_command(&bot, &msg, &state, &text).await {
+                        tracing::error!("Error handling command: {}", e);
+                    }
+                }
+                // Handle music URLs
+                else if text.contains("music.163.com")
+                    || text.contains("163cn.tv")
+                    || text.contains("163cn.link")
+                {
+                    if let Err(e) = handle_music_url(&bot, &msg, &state, &text).await {
+                        tracing::error!("Error handling music URL: {}", e);
+                    }
+                }
+            });
         }
     }
     Ok(())
