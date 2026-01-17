@@ -1,0 +1,127 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build - ${{ matrix.platform.os_name }} (${{ matrix.platform.arch }})
+    runs-on: ${{ matrix.platform.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - {
+              os_name: Linux-x86_64,
+              runs_on: ubuntu-latest,
+              target: x86_64-unknown-linux-gnu,
+              arch: x86_64,
+              suffix: ""
+            }
+          - {
+              os_name: Linux-aarch64,
+              runs_on: ubuntu-latest,
+              target: aarch64-unknown-linux-gnu,
+              arch: aarch64,
+              suffix: ""
+            }
+          - {
+              os_name: macOS-x86_64,
+              runs_on: macos-latest,
+              target: x86_64-apple-darwin,
+              arch: x86_64,
+              suffix: ""
+            }
+          - {
+              os_name: macOS-aarch64,
+              runs_on: macos-latest,
+              target: aarch64-apple-darwin,
+              arch: aarch64,
+              suffix: ""
+            }
+          - {
+              os_name: Windows-x86_64,
+              runs_on: windows-latest,
+              target: x86_64-pc-windows-msvc,
+              arch: x86_64,
+              suffix: ".exe"
+            }
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target }}
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+          if [ "${{ matrix.platform.arch }}" = "aarch64" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+          fi
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+          fi
+          cargo build --release --target ${{ matrix.platform.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          BINARY_NAME="music163bot-rust"
+          SRC="target/${{ matrix.platform.target }}/release/${BINARY_NAME}${{ matrix.platform.suffix }}"
+          DEST="dist/${BINARY_NAME}-${{ matrix.platform.os_name }}${{ matrix.platform.suffix }}"
+          cp "$SRC" "$DEST"
+          
+          # Copy auxiliary files
+          cp config.ini.example dist/
+          cp LICENSE dist/
+          cp README.md dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform.os_name }}
+          path: dist/*
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release_files
+          find artifacts -type f -exec cp {} release_files/ \;
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release_files/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
