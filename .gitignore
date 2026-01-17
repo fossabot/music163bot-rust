@@ -1,0 +1,6 @@
+/target
+config.ini
+data/
+downloads/
+*.db
+*.log

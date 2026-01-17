@@ -1,0 +1,61 @@
+[bot]
+# Telegram Bot Token (从 @BotFather 获取)
+token = YOUR_BOT_TOKEN_HERE
+
+# API基础URL (你的自定义Telegram API，如果有的话)
+# 默认使用官方API，如果你有自定义API服务器，可以替换这个URL
+# 注意：不需要在URL末尾添加/bot，程序会自动处理
+api = https://api.telegram.org
+
+# 管理员用户ID (逗号分隔，用于删除缓存等管理功能)
+# 获取方法：发送消息给 @userinfobot 获取你的用户ID
+# 示例: botadmin = 123456789,987654321
+# 或者使用 bot.admin = 123456789,987654321
+botadmin = 
+
+[music]
+# 网易云音乐API基础URL (你的自定义NetEase API，如果有的话)
+# 默认使用官方API，如果你有自定义API服务器，可以替换这个URL
+api = https://music.163.com
+
+# 网易云音乐MUSIC_U Cookie (用于访问付费歌曲和无损音质，可选)
+# 获取方法：登录网易云音乐网页版，查看Cookie中的MUSIC_U值
+music_u = 
+
+[database]
+# 数据库文件路径
+url = ./data/music_bot.db
+
+[download]
+# 下载目录
+dir = ./downloads
+
+# 是否启用文件缓存
+cache_enabled = true
+
+# 缓存大小限制 (MB)
+max_cache_size = 1024
+
+# 配置说明和使用指南
+# 
+# 1. 基本配置:
+#    - 复制此文件为 config.ini
+#    - 设置你的bot token
+#    - 设置管理员用户ID
+#
+# 2. 高级功能:
+#    - 添加MUSIC_U cookie可获取VIP音质和FLAC格式
+#    - 自定义API可使用你自己的服务器
+#
+# 3. 管理员功能:
+#    - /rmcache <歌曲ID> - 删除歌曲缓存
+#    - /status - 查看统计信息
+#
+# 4. 获取用户ID方法:
+#    发送任意消息给 @userinfobot
+#
+# 5. 支持的功能:
+#    - FLAC无损音质下载 (需要MUSIC_U)
+#    - 专辑封面下载和嵌入
+#    - 自动音质选择 (FLAC -> 320k MP3 -> 128k MP3)
+#    - 403错误自动规避

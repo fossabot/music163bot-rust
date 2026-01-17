@@ -1,0 +1,109 @@
+use once_cell::sync::Lazy;
+use regex::Regex;
+use std::path::Path;
+
+/// Global regex patterns for URL parsing
+static SONG_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"music\.163\.com/.*?song.*?[?&]id=(\d+)").unwrap());
+
+static SHARE_LINK_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(http|https)://[\w\-_]+(\.[\w\-_]+)+([\w\-.,@?^=%&:/~+#]*[\w\-@?^=%&/~+#])?")
+        .unwrap()
+});
+
+static NUMBER_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\d+").unwrap());
+
+/// Extract music ID from text
+pub fn parse_music_id(text: &str) -> Option<u64> {
+    let text = text.replace(['\n', ' '], "");
+
+    // Try to extract from URL
+    if let Some(captures) = SONG_REGEX.captures(&text) {
+        if let Some(id_str) = captures.get(1) {
+            return id_str.as_str().parse().ok();
+        }
+    }
+
+    // Try to extract from share link
+    if let Some(url_match) = SHARE_LINK_REGEX.find(&text) {
+        if url_match.as_str().contains("song") {
+            if let Some(id_match) = NUMBER_REGEX.find(url_match.as_str()) {
+                return id_match.as_str().parse().ok();
+            }
+        }
+    }
+
+    // Try to parse as direct number
+    NUMBER_REGEX.find(&text)?.as_str().parse().ok()
+}
+
+/// Check if directory exists, create if not
+pub fn ensure_dir(path: &str) -> std::io::Result<()> {
+    let path = Path::new(path);
+    if !path.exists() {
+        std::fs::create_dir_all(path)?;
+    }
+    Ok(())
+}
+
+/// Clean filename for safe file operations
+pub fn clean_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '/' | '\\' | '?' | '*' | ':' | '|' | '<' | '>' | '"' => ' ',
+            _ => c,
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// Calculate MD5 hash of a file
+pub fn verify_md5(file_path: &str, expected_md5: &str) -> anyhow::Result<bool> {
+    use std::fs::File;
+    use std::io::{BufReader, Read};
+
+    let file = File::open(file_path)?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = md5::Context::new();
+    let mut buffer = [0; 8192];
+
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.consume(&buffer[..count]);
+    }
+
+    let result = hasher.compute();
+    let hash = format!("{:x}", result);
+
+    Ok(hash.eq_ignore_ascii_case(expected_md5))
+}
+
+/// Format file size in human readable format
+pub fn format_file_size(size: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
+    let mut size = size as f64;
+    let mut unit_index = 0;
+
+    while size >= 1024.0 && unit_index < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit_index += 1;
+    }
+
+    format!("{:.2} {}", size, UNITS[unit_index])
+}
+
+/// Format duration in human readable format
+pub fn format_duration(seconds: u64) -> String {
+    let minutes = seconds / 60;
+    let seconds = seconds % 60;
+    format!("{:02}:{:02}", minutes, seconds)
+}
+
+/// Check if an error is a timeout error
+pub fn is_timeout_error(error: &dyn std::error::Error) -> bool {
+    error.to_string().contains("timeout") || error.to_string().contains("deadline")
+}
