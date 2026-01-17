@@ -33,8 +33,11 @@ pub fn parse_music_id(text: &str) -> Option<u64> {
         }
     }
 
-    // Try to parse as direct number
-    NUMBER_REGEX.find(&text)?.as_str().parse().ok()
+    // Try to parse as direct number (only if the entire text is a number)
+    if text.parse::<u64>().is_ok() {
+        return text.parse().ok();
+    }
+    None
 }
 
 /// Check if directory exists, create if not

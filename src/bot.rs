@@ -1060,21 +1060,22 @@ async fn handle_search_command(
                 return Ok(());
             }
 
-            let mut results = String::from("🔍 搜索结果：\n\n");
-            for (i, song) in songs.iter().take(5).enumerate() {
+            let mut results = String::new();
+            let mut buttons = Vec::new();
+
+            for (i, song) in songs.iter().take(8).enumerate() {
                 let artists = format_artists(&song.artists);
-                results.push_str(&format!(
-                    "{}. {} - {}\n   💿 {}\n   🆔 {}\n\n",
-                    i + 1,
-                    song.name,
-                    artists,
-                    song.album.name,
-                    song.id
+                results.push_str(&format!("{}.「{}」 - {}\n", i + 1, song.name, artists));
+                buttons.push(InlineKeyboardButton::callback(
+                    format!("{}", i + 1),
+                    format!("music {}", song.id),
                 ));
             }
-            results.push_str("💡 使用 `/music <ID>` 获取歌曲");
+
+            let keyboard = InlineKeyboardMarkup::new(vec![buttons]);
 
             bot.edit_message_text(msg.chat.id, search_msg.id, results)
+                .reply_markup(keyboard)
                 .await?;
         }
         Err(e) => {
@@ -1138,7 +1139,6 @@ async fn handle_lyric_command(
     let music_id = if let Some(id) = parse_music_id(&args) {
         id
     } else {
-        // Search for song first
         match state.music_api.search_songs(&args, 1).await {
             Ok(songs) => {
                 if let Some(song) = songs.first() {
@@ -1166,37 +1166,41 @@ async fn handle_lyric_command(
 
     match state.music_api.get_song_lyric(music_id).await {
         Ok(lyric) => {
-            let formatted_lyric = if lyric.trim().is_empty() {
-                "该歌曲暂无歌词".to_string()
-            } else {
-                // Clean up lyric format
-                lyric
-                    .lines()
-                    .filter(|line| !line.trim().is_empty())
-                    .map(|line| {
-                        // Remove timestamp like [00:12.34]
-                        let re = regex::Regex::new(r"\[\d+:\d+\.\d+\]").unwrap();
-                        re.replace(line, "").trim().to_string()
-                    })
-                    .filter(|line| !line.is_empty())
-                    .collect::<Vec<_>>()
-                    .join("\n")
+            if lyric.trim().is_empty() || lyric == "No lyrics available" {
+                bot.edit_message_text(msg.chat.id, status_msg.id, "该歌曲暂无歌词")
+                    .await?;
+                return Ok(());
+            }
+
+            // Get song detail for filename
+            let song_detail = match state.music_api.get_song_detail(music_id).await {
+                Ok(detail) => detail,
+                Err(e) => {
+                    bot.edit_message_text(
+                        msg.chat.id,
+                        status_msg.id,
+                        format!("获取歌曲信息失败: {}", e),
+                    )
+                    .await?;
+                    return Ok(());
+                }
             };
 
-            // Telegram has a message length limit
-            let max_length = 4000;
-            let final_lyric = if formatted_lyric.len() > max_length {
-                format!("{}...\n\n歌词过长，已截断", &formatted_lyric[..max_length])
-            } else {
-                formatted_lyric
-            };
+            let artists = format_artists(song_detail.ar.as_deref().unwrap_or(&[]));
+            let lrc_filename = clean_filename(&format!("{} - {}.lrc", artists, song_detail.name));
+            let lrc_path = format!("{}/{}", state.config.cache_dir, lrc_filename);
 
-            bot.edit_message_text(
+            tokio::fs::write(&lrc_path, &lyric).await?;
+
+            bot.send_document(
                 msg.chat.id,
-                status_msg.id,
-                format!("🎵 歌词：\n\n{}", final_lyric),
+                InputFile::file(std::path::Path::new(&lrc_path)),
             )
+            .reply_to_message_id(msg.id)
             .await?;
+
+            tokio::fs::remove_file(&lrc_path).await.ok();
+            bot.delete_message(msg.chat.id, status_msg.id).await.ok();
         }
         Err(e) => {
             bot.edit_message_text(msg.chat.id, status_msg.id, format!("获取歌词失败: {}", e))
@@ -1324,11 +1328,37 @@ async fn handle_rmcache_command(
 }
 
 async fn handle_callback(
-    _bot: Bot,
-    _query: CallbackQuery,
-    _state: Arc<BotState>,
+    bot: Bot,
+    query: CallbackQuery,
+    state: Arc<BotState>,
 ) -> ResponseResult<()> {
-    // TODO: Implement callback handling
+    if let Some(data) = query.data {
+        let parts: Vec<&str> = data.split_whitespace().collect();
+        if parts.len() >= 2 && parts[0] == "music" {
+            if let Ok(music_id) = parts[1].parse::<u64>() {
+                let msg = query.message.as_ref().unwrap();
+                match process_music(&bot, msg, &state, music_id).await {
+                    Ok(_) => {
+                        bot.answer_callback_query(&query.id)
+                            .text("✅ 开始下载")
+                            .await?;
+                    }
+                    Err(e) => {
+                        tracing::error!("Error processing music from callback: {}", e);
+                        bot.answer_callback_query(&query.id)
+                            .text(format!("❌ 失败: {}", e))
+                            .await?;
+                    }
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    bot.answer_callback_query(&query.id)
+        .text("❌ 无效的操作")
+        .await?;
+
     Ok(())
 }
 
@@ -1396,7 +1426,7 @@ async fn add_id3_tags_with_artwork(
         tracing::info!("No artwork provided for MP3: {}", file_path);
     }
 
-    // Save the tag
+    // Save tag
     match tag.write_to_path(file_path, id3::Version::Id3v24) {
         Ok(_) => tracing::info!("✅ ID3 tags written successfully to {}", file_path),
         Err(e) => tracing::warn!("Failed to write ID3 tags to {}: {}", file_path, e),
@@ -1411,54 +1441,63 @@ async fn handle_inline_query(
     state: Arc<BotState>,
 ) -> ResponseResult<()> {
     let text = query.query.trim();
-    if text.is_empty() {
-        // Return help information via inline
-        let help_article = InlineQueryResultArticle::new(
-            "usage_help",
-            "如何使用此机器人？",
-            InputMessageContent::Text(InputMessageContentText::new(format!(
-                "使用方法：\n1. 直接输入关键词搜索音乐\n2. 粘贴网易云音乐链接\n3. 输入歌曲 ID"
-            ))),
-        )
-        .description("在输入框中输入关键词开始搜索音乐");
 
-        bot.answer_inline_query(&query.id, vec![InlineQueryResult::Article(help_article)])
-            .await?;
+    // Support "search" prefix for consistency with Go version
+    let (search_keyword, is_search_cmd) = if text.to_lowercase().starts_with("search ") {
+        let keyword = text[7..].trim();
+        (keyword, true)
+    } else if text.to_lowercase().starts_with("search") {
+        ("", true)
+    } else {
+        (text, false)
+    };
+
+    if search_keyword.is_empty() {
+        if is_search_cmd {
+            let help_article = InlineQueryResultArticle::new(
+                "search_help",
+                "请输入关键词",
+                InputMessageContent::Text(InputMessageContentText::new(format!(
+                    "使用方法：在 @{} 后面输入 search 关键词 搜索音乐",
+                    state.bot_username
+                ))),
+            )
+            .description("输入关键词开始搜索");
+
+            bot.answer_inline_query(&query.id, vec![InlineQueryResult::Article(help_article)])
+                .await?;
+        } else {
+            let help_article = InlineQueryResultArticle::new(
+                "usage_help",
+                "如何使用此机器人？",
+                InputMessageContent::Text(InputMessageContentText::new(
+                    "使用方法：\n1. 直接输入关键词搜索音乐\n2. 输入 search 关键词 搜索音乐\n3. 粘贴网易云音乐链接\n4. 输入歌曲 ID".to_string()
+                )),
+            )
+            .description("在输入框中输入关键词开始搜索音乐");
+
+            bot.answer_inline_query(&query.id, vec![InlineQueryResult::Article(help_article)])
+                .await?;
+        }
         return Ok(());
     }
 
-    // Perform search
-    match state.music_api.search_songs(text, 20).await {
+    match state.music_api.search_songs(search_keyword, 10).await {
         Ok(songs) => {
             let mut results = Vec::new();
 
-            for song in songs {
-                let _artists = format_artists(&song.artists);
-
-                // Check if cached
-                let is_cached = if let Ok(Some(info)) =
-                    state.database.get_song_by_music_id(song.id as i64).await
-                {
-                    info.file_id.is_some()
-                } else {
-                    false
-                };
-
-                let description = if is_cached {
-                    format!("✅ 已缓存 | 专辑: {}", song.album.name)
-                } else {
-                    format!("专辑: {}", song.album.name)
-                };
+            for (i, song) in songs.iter().take(10).enumerate() {
+                let artists = format_artists(&song.artists);
 
                 let mut article = InlineQueryResultArticle::new(
-                    song.id.to_string(),
+                    format!("{}_{}", song.id, i),
                     &song.name,
                     InputMessageContent::Text(InputMessageContentText::new(format!(
                         "/netease {}",
                         song.id
                     ))),
                 )
-                .description(description);
+                .description(artists);
 
                 if let Some(ref pic_url) = song.album.pic_url {
                     article.thumb_url = Some(reqwest::Url::parse(pic_url).unwrap());
@@ -1473,6 +1512,15 @@ async fn handle_inline_query(
         }
         Err(e) => {
             tracing::error!("Inline search error: {}", e);
+            let error_article = InlineQueryResultArticle::new(
+                "search_error",
+                "搜索失败",
+                InputMessageContent::Text(InputMessageContentText::new(format!("搜索失败: {}", e))),
+            )
+            .description("搜索失败，请稍后重试");
+
+            bot.answer_inline_query(&query.id, vec![InlineQueryResult::Article(error_article)])
+                .await?;
         }
     }
 
