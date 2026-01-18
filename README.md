@@ -11,6 +11,7 @@
 - 🎤 **歌词获取**: 支持获取歌曲歌词。
 - 🖼️ **封面嵌入**: 自动为下载的音乐文件嵌入 ID3/FLAC 封面。
 - 📊 **统计信息**: 查看缓存占用和用户统计。
+- 🚀 **智能存储**: 支持磁盘/内存/混合模式，优化下载性能和资源占用（v1.1.0+）。
 - ⚡ **高性能**: 基于 Tokio 异步运行时，响应迅速。
 
 ## 支持的链接格式
@@ -49,9 +50,32 @@ cargo build --release
    ```
 
 2. 编辑 `config.ini` 配置文件：
-   - 在 `[bot]` 部分设置你的 `bot_token`。
-   - 可选：在 `[music]` 部分设置 `music_u` cookie 来访问付费歌曲。
-   - 调整 `cache_dir` 和 `database` 路径。
+    - 在 `[bot]` 部分设置你的 `bot_token`。
+    - 可选：在 `[music]` 部分设置 `music_u` cookie 来访问付费歌曲。
+    - 调整 `cache_dir` 和 `database` 路径。
+    - （v1.1.0+）在 `[download]` 部分配置存储模式。
+
+### 存储模式配置 (v1.1.0+)
+
+在 `[download]` 部分设置存储模式：
+
+- `disk`: 传统磁盘文件（稳定，低内存）
+- `memory`: 内存处理（更快，减少磁盘I/O）
+- `hybrid`: 智能选择（推荐，小文件用内存）
+
+可选参数：
+
+- `memory_threshold`: 混合模式阈值（默认 100MB）
+- `memory_buffer`: 内存安全缓冲区（默认 100MB）
+
+示例配置：
+
+```ini
+[download]
+storage_mode = hybrid
+memory_threshold = 100
+memory_buffer = 100
+```
 
 ### 运行
 

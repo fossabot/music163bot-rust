@@ -1,6 +1,6 @@
 [package]
 name = "music163bot-rust"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 license = "WTFPL"
 
@@ -59,3 +59,6 @@ image = { version = "0.24", default-features = false, features = ["jpeg", "png",
 
 # FLAC 元数据（写入封面）
 metaflac = "0.2"
+
+# System info (for memory detection in smart storage)
+sysinfo = "0.30"

@@ -4,6 +4,47 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
+/// Storage mode for temporary files during download processing
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageMode {
+    /// Traditional disk file storage (stable, low memory, compatible with all scenarios)
+    Disk,
+    /// In-memory processing (faster, reduces disk I/O, requires sufficient RAM)
+    Memory,
+    /// Smart selection based on file size and available memory (recommended)
+    Hybrid,
+}
+
+impl Default for StorageMode {
+    fn default() -> Self {
+        Self::Disk // Backward compatible default
+    }
+}
+
+impl std::str::FromStr for StorageMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "disk" => Ok(Self::Disk),
+            "memory" => Ok(Self::Memory),
+            "hybrid" => Ok(Self::Hybrid),
+            _ => Err(anyhow::anyhow!("Invalid storage mode: {s}")),
+        }
+    }
+}
+
+impl std::fmt::Display for StorageMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Disk => write!(f, "disk"),
+            Self::Memory => write!(f, "memory"),
+            Self::Hybrid => write!(f, "hybrid"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     // Required fields
@@ -23,6 +64,14 @@ pub struct Config {
     pub max_retry_times: u32,
     pub download_timeout: u64,
     pub check_md5: bool,
+
+    // Smart storage settings (v1.1.0+)
+    /// Storage mode for temporary files: disk, memory, or hybrid
+    pub storage_mode: StorageMode,
+    /// Memory threshold in MB for hybrid mode (files larger than this use disk)
+    pub memory_threshold_mb: u64,
+    /// Memory buffer in MB (available memory must exceed file size + buffer to use memory mode)
+    pub memory_buffer_mb: u64,
 }
 
 impl Default for Config {
@@ -42,6 +91,10 @@ impl Default for Config {
             max_retry_times: 3,
             download_timeout: 60,
             check_md5: true,
+            // Smart storage defaults (v1.1.0+)
+            storage_mode: StorageMode::Disk, // Backward compatible
+            memory_threshold_mb: 100,
+            memory_buffer_mb: 100,
         }
     }
 }
@@ -160,6 +213,20 @@ impl Config {
 
         if let Some(check_md5) = config_map.get("checkmd5") {
             config.check_md5 = check_md5.to_lowercase() == "true";
+        }
+
+        // Smart storage settings (v1.1.0+)
+        if let Some(mode) = config_map.get("download.storage_mode") {
+            match mode.parse::<StorageMode>() {
+                Ok(m) => config.storage_mode = m,
+                Err(e) => tracing::warn!("Invalid storage_mode '{}': {}, using default", mode, e),
+            }
+        }
+        if let Some(threshold) = config_map.get("download.memory_threshold") {
+            config.memory_threshold_mb = threshold.parse().unwrap_or(100);
+        }
+        if let Some(buffer) = config_map.get("download.memory_buffer") {
+            config.memory_buffer_mb = buffer.parse().unwrap_or(100);
         }
 
         // Validate required fields

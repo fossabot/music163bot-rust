@@ -8,6 +8,7 @@ use teloxide::types::{
     MessageKind, ParseMode, ReplyMarkup,
 };
 
+use crate::audio_buffer::{AudioBuffer, ThumbnailBuffer};
 use crate::config::Config;
 use crate::database::{Database, SongInfo};
 use crate::error::Result;
@@ -537,8 +538,6 @@ async fn download_and_send_music(
     song_url: &crate::music_api::SongUrl,
     status_msg: &Message,
 ) -> Result<()> {
-    use tokio::io::AsyncWriteExt;
-
     let _permit = state.download_semaphore.acquire().await.unwrap();
 
     // Determine file extension
@@ -555,7 +554,6 @@ async fn download_and_send_music(
         song_detail.name,
         file_ext
     ));
-    let file_path = format!("{}/{}", state.config.cache_dir, filename);
 
     // Ensure cache directory exists
     ensure_dir(&state.config.cache_dir)?;
@@ -614,7 +612,7 @@ async fn download_and_send_music(
         }
     };
 
-    // Download audio file
+    // Download audio file using smart storage
     let audio_future = async {
         let response = state.music_api.download_file(&song_url.url).await?;
 
@@ -629,60 +627,78 @@ async fn download_and_send_music(
             return Err(anyhow::anyhow!("Empty file or unable to get file size"));
         }
 
-        let mut file = tokio::fs::File::create(&file_path).await?;
+        // Create audio buffer based on storage mode configuration
+        let mut audio_buffer = AudioBuffer::new(
+            &state.config,
+            content_length,
+            filename.clone(),
+            file_ext,
+            &state.config.cache_dir,
+        )
+        .await?;
+
         let mut stream = response.bytes_stream();
         let mut downloaded = 0u64;
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
             downloaded += chunk.len() as u64;
-            file.write_all(&chunk).await?;
+            audio_buffer.write_chunk(&chunk).await?;
         }
-        file.flush().await?;
+        audio_buffer.finish().await?;
 
-        Ok::<u64, anyhow::Error>(downloaded)
+        Ok::<(AudioBuffer, u64), anyhow::Error>((audio_buffer, downloaded))
     };
 
     // Execute both downloads in parallel
     let (downloaded_result, thumbnail_path) = tokio::join!(audio_future, artwork_future);
-    let downloaded = downloaded_result?;
+    let (mut audio_buffer, downloaded) = downloaded_result?;
 
-    tracing::info!("✅ Audio download completed: {} bytes", downloaded);
     tracing::info!(
-        "✅ Cover download result: {}",
+        "Audio download completed: {} bytes (mode: {})",
+        downloaded,
+        if audio_buffer.is_memory() {
+            "memory"
+        } else {
+            "disk"
+        }
+    );
+    tracing::info!(
+        "Cover download result: {}",
         thumbnail_path.as_deref().unwrap_or("None")
     );
 
-    // Simple file existence and size check
-    let file_metadata = tokio::fs::metadata(&file_path).await?;
-    let actual_size = file_metadata.len();
+    // Validate file size
+    let actual_size = audio_buffer.size();
 
     if actual_size == 0 {
-        let _ = tokio::fs::remove_file(&file_path).await;
-        bot.edit_message_text(msg.chat.id, status_msg.id, "❌ 下载失败: 文件为空")
+        audio_buffer.cleanup().await.ok();
+        bot.edit_message_text(msg.chat.id, status_msg.id, "下载失败: 文件为空")
             .await?;
         return Ok(());
     }
 
     if actual_size < 1024 {
-        let _ = tokio::fs::remove_file(&file_path).await;
+        audio_buffer.cleanup().await.ok();
         bot.edit_message_text(
             msg.chat.id,
             status_msg.id,
-            format!("❌ 下载失败: 文件太小({actual_size} bytes)"),
+            format!("下载失败: 文件太小({actual_size} bytes)"),
         )
         .await?;
         return Ok(());
     }
 
-    tracing::info!("✅ File validation passed: {} bytes", actual_size);
+    tracing::info!("File validation passed: {} bytes", actual_size);
 
     // 封面处理：先确保有封面文件，再根据格式处理
-    tracing::info!("� Processing cover art for {} format", file_ext);
+    tracing::info!("Processing cover art for {} format", file_ext);
 
-    let cover_path = if let Some(ref thumb) = thumbnail_path {
-        tracing::info!("Using parallel downloaded cover: {}", thumb);
-        Some(thumb.clone())
+    // Convert thumbnail path to ThumbnailBuffer if available
+    let thumbnail_buffer: Option<ThumbnailBuffer> = if let Some(ref thumb_path) = thumbnail_path {
+        Some(ThumbnailBuffer::from_path(std::path::PathBuf::from(
+            thumb_path,
+        )))
     } else {
         // 并行下载失败，重新尝试下载封面
         tracing::info!("Parallel cover download failed, retrying...");
@@ -704,8 +720,10 @@ async fn download_and_send_music(
                         .await
                     {
                         Ok(()) => {
-                            tracing::info!("✅ Successfully downloaded cover: {}", thumb_path);
-                            Some(thumb_path)
+                            tracing::info!("Successfully downloaded cover: {}", thumb_path);
+                            Some(ThumbnailBuffer::from_path(std::path::PathBuf::from(
+                                thumb_path,
+                            )))
                         }
                         Err(e) => {
                             tracing::warn!("Cover download failed: {}", e);
@@ -721,42 +739,33 @@ async fn download_and_send_music(
         }
     };
 
-    // 根据文件格式嵌入封面
-    let final_thumbnail_path = if let Some(ref cover) = cover_path {
-        match file_ext {
-            "mp3" => {
-                tracing::info!("🎵 Adding ID3 tags to MP3: {}", file_path);
-                match add_id3_tags_with_artwork(&file_path, song_detail, Some(cover)) {
-                    Ok(()) => tracing::info!("✅ MP3 tags added successfully"),
-                    Err(e) => tracing::warn!("Failed to add MP3 tags: {}", e),
-                }
-                Some(cover.clone())
-            }
-            "flac" => {
-                tracing::info!("🎵 Adding PICTURE block to FLAC: {}", file_path);
-                match add_flac_picture_with_artwork(&file_path, cover) {
-                    Ok(()) => tracing::info!("✅ FLAC cover embedded successfully"),
-                    Err(e) => tracing::warn!("Failed to embed FLAC cover: {}", e),
-                }
-                Some(cover.clone())
-            }
-            _ => {
-                tracing::info!("Unknown format {}, skipping cover embedding", file_ext);
-                Some(cover.clone())
-            }
-        }
+    // Get artwork data for embedding
+    let artwork_data = if let Some(ref thumb_buf) = thumbnail_buffer {
+        thumb_buf.get_data().await.ok()
     } else {
-        tracing::info!("No cover available, processing audio only");
-        // 即使没有封面，MP3也要写基础标签
-        if file_ext == "mp3" {
-            tracing::info!("Adding basic ID3 tags to MP3 (no cover)");
-            match add_id3_tags_with_artwork(&file_path, song_detail, None) {
-                Ok(()) => tracing::info!("✅ Basic MP3 tags added"),
-                Err(e) => tracing::warn!("Failed to add basic MP3 tags: {}", e),
-            }
-        }
         None
     };
+
+    // 根据文件格式嵌入封面
+    match file_ext {
+        "mp3" => {
+            tracing::info!("Adding ID3 tags to MP3");
+            match audio_buffer.add_id3_tags(song_detail, artwork_data.as_deref()) {
+                Ok(()) => tracing::info!("MP3 tags added successfully"),
+                Err(e) => tracing::warn!("Failed to add MP3 tags: {}", e),
+            }
+        }
+        "flac" => {
+            tracing::info!("Adding PICTURE block to FLAC");
+            match audio_buffer.add_flac_metadata(artwork_data.as_deref()) {
+                Ok(()) => tracing::info!("FLAC cover embedded successfully"),
+                Err(e) => tracing::warn!("Failed to embed FLAC cover: {}", e),
+            }
+        }
+        _ => {
+            tracing::info!("Unknown format {}, skipping cover embedding", file_ext);
+        }
+    }
 
     // Create song info for database
     let mut song_info = SongInfo {
@@ -768,7 +777,7 @@ async fn download_and_send_music(
             .as_ref()
             .map_or_else(|| "Unknown Album".to_string(), |al| al.name.clone()),
         file_ext: file_ext.to_string(),
-        music_size: downloaded as i64,
+        music_size: audio_buffer.size() as i64,
         pic_size: 0,
         emb_pic_size: 0,
         bit_rate: song_url.br as i64,
@@ -790,7 +799,7 @@ async fn download_and_send_music(
     // Log final thumbnail status
     tracing::info!(
         "Final thumbnail status: {}",
-        if final_thumbnail_path.is_some() {
+        if thumbnail_buffer.is_some() {
             "Available"
         } else {
             "None"
@@ -814,28 +823,25 @@ async fn download_and_send_music(
         &song_info.song_artists,
     );
 
-    // Use file path directly for size check
-    let file_size = match std::fs::metadata(&file_path) {
-        Ok(metadata) => {
-            if metadata.len() == 0 {
-                return Err(anyhow::anyhow!("Audio file is empty: {file_path}").into());
-            }
-            metadata.len()
+    // Get file size for logging
+    let file_size = audio_buffer.size();
+    if file_size == 0 {
+        audio_buffer.cleanup().await.ok();
+        if let Some(thumb_buf) = thumbnail_buffer {
+            thumb_buf.cleanup().await.ok();
         }
-        Err(e) => {
-            return Err(anyhow::anyhow!("Cannot access audio file {file_path}: {e}").into());
-        }
-    };
-
-    // Resolve absolute path for upload
-    let absolute_path =
-        std::fs::canonicalize(&file_path).unwrap_or_else(|_| std::path::PathBuf::from(&file_path));
+        return Err(anyhow::anyhow!("Audio file is empty after processing").into());
+    }
 
     tracing::info!(
-        "Prepared audio file: {} (abs: {}) ({:.2} MB)",
-        file_path,
-        absolute_path.display(),
-        file_size as f64 / 1024.0 / 1024.0
+        "Prepared audio: {} ({:.2} MB, mode: {})",
+        audio_buffer.filename(),
+        file_size as f64 / 1024.0 / 1024.0,
+        if audio_buffer.is_memory() {
+            "memory"
+        } else {
+            "disk"
+        }
     );
 
     // Build a dedicated upload bot. If a custom API is configured, use it but with an upload-optimized HTTP client.
@@ -874,20 +880,21 @@ async fn download_and_send_music(
     // Send audio file with enhanced error handling and proper MIME type
     tracing::info!(
         "Sending audio file: {} ({:.2} MB)",
-        file_path,
+        audio_buffer.filename(),
         file_size as f64 / 1024.0 / 1024.0
     );
 
     // Simple approach: try sending as audio first, fallback to document if needed
-    let is_flac = std::path::Path::new(&file_path)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("flac"));
+    let is_flac = file_ext == "flac";
 
     tracing::info!("File format: {}", if is_flac { "FLAC" } else { "MP3" });
 
+    // Create InputFile from audio buffer
+    let audio_input_file = audio_buffer.to_input_file();
+
     // Try sending as audio with basic metadata
     let mut audio_req = upload_bot
-        .send_audio(msg.chat.id, InputFile::file(&absolute_path))
+        .send_audio(msg.chat.id, audio_input_file)
         .caption(&caption)
         .title(&song_info.song_name)
         .performer(&song_info.song_artists)
@@ -896,8 +903,15 @@ async fn download_and_send_music(
         .reply_to_message_id(msg.id);
 
     // Attach thumbnail if available
-    if let Some(ref thumb) = final_thumbnail_path {
-        audio_req = audio_req.thumb(InputFile::file(std::path::Path::new(thumb)));
+    if let Some(ref thumb_buf) = thumbnail_buffer {
+        match thumb_buf.to_input_file() {
+            Ok(thumb_input) => {
+                audio_req = audio_req.thumb(thumb_input);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to attach thumbnail: {}", e);
+            }
+        }
     }
 
     // Thumbnail will be embedded into tags for MP3 and FLAC (when possible)
@@ -920,9 +934,10 @@ async fn download_and_send_music(
         Err(e) => {
             tracing::warn!("Audio send failed: {}, trying document fallback", e);
 
-            // Fallback: send as document
+            // Fallback: send as document (need to create InputFile again)
+            let doc_input_file = audio_buffer.to_input_file();
             let doc_req = upload_bot
-                .send_document(msg.chat.id, InputFile::file(&absolute_path))
+                .send_document(msg.chat.id, doc_input_file)
                 .caption(&caption)
                 .reply_markup(keyboard)
                 .reply_to_message_id(msg.id);
@@ -944,8 +959,9 @@ async fn download_and_send_music(
                     if used_custom_api {
                         tracing::warn!("Retrying upload via official Telegram API as fallback");
                         let official_bot = Bot::new(&state.config.bot_token);
+                        let retry_input_file = audio_buffer.to_input_file();
                         let retry_req = official_bot
-                            .send_document(msg.chat.id, InputFile::file(&absolute_path))
+                            .send_document(msg.chat.id, retry_input_file)
                             .caption(&caption)
                             .reply_to_message_id(msg.id);
                         // retry without explicit thumbnail method
@@ -962,10 +978,15 @@ async fn download_and_send_music(
                                 }
                             }
                             Err(final_err) => {
+                                // Cleanup before returning error
+                                audio_buffer.cleanup().await.ok();
+                                if let Some(thumb_buf) = thumbnail_buffer {
+                                    thumb_buf.cleanup().await.ok();
+                                }
                                 bot.edit_message_text(
                                     msg.chat.id,
                                     status_msg.id,
-                                    format!("❌ 发送失败: {final_err}"),
+                                    format!("发送失败: {final_err}"),
                                 )
                                 .await
                                 .ok();
@@ -973,10 +994,15 @@ async fn download_and_send_music(
                             }
                         }
                     } else {
+                        // Cleanup before returning error
+                        audio_buffer.cleanup().await.ok();
+                        if let Some(thumb_buf) = thumbnail_buffer {
+                            thumb_buf.cleanup().await.ok();
+                        }
                         bot.edit_message_text(
                             msg.chat.id,
                             status_msg.id,
-                            format!("❌ 发送失败: {doc_err}"),
+                            format!("发送失败: {doc_err}"),
                         )
                         .await
                         .ok();
@@ -990,10 +1016,10 @@ async fn download_and_send_music(
     // Save to database
     state.database.save_song_info(&song_info).await?;
 
-    // Clean up downloaded files
-    std::fs::remove_file(&file_path).ok();
-    if let Some(thumb_path) = thumbnail_path {
-        std::fs::remove_file(&thumb_path).ok();
+    // Clean up resources
+    audio_buffer.cleanup().await.ok();
+    if let Some(thumb_buf) = thumbnail_buffer {
+        thumb_buf.cleanup().await.ok();
     }
 
     // Delete status message
@@ -1361,82 +1387,6 @@ async fn handle_callback(
     Ok(())
 }
 
-/// Add ID3 tags with album artwork to MP3 file
-#[allow(clippy::unnecessary_wraps)]
-fn add_id3_tags_with_artwork(
-    file_path: &str,
-    song_detail: &crate::music_api::SongDetail,
-    artwork_path: Option<&str>,
-) -> Result<()> {
-    use id3::{frame, Tag, TagLike};
-    use std::path::Path;
-
-    // Only process MP3 files
-    if !std::path::Path::new(file_path)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("mp3"))
-    {
-        tracing::debug!("Skipping ID3 tags for non-MP3 file: {}", file_path);
-        return Ok(());
-    }
-
-    let path = Path::new(file_path);
-    if !path.exists() {
-        tracing::warn!("MP3 file not found for ID3 tagging: {}", file_path);
-        return Ok(());
-    }
-
-    // Create and write ID3 tags
-    let mut tag = Tag::new();
-
-    // Basic metadata
-    tag.set_title(&song_detail.name);
-    let album_name = song_detail
-        .al
-        .as_ref()
-        .map_or("Unknown Album", |al| al.name.as_str());
-    tag.set_album(album_name);
-    tag.set_artist(format_artists(song_detail.ar.as_deref().unwrap_or(&[])));
-
-    // Duration in seconds
-    tag.set_duration((song_detail.dt.unwrap_or(0) / 1000) as u32);
-
-    // Add album artwork if provided
-    if let Some(artwork_path) = artwork_path {
-        tracing::info!("Attempting to add album artwork to ID3: {}", artwork_path);
-        if Path::new(artwork_path).exists() {
-            match std::fs::read(artwork_path) {
-                Ok(artwork_data) => {
-                    tracing::info!("Read artwork file: {} bytes", artwork_data.len());
-                    let picture = frame::Picture {
-                        mime_type: "image/jpeg".to_string(),
-                        picture_type: frame::PictureType::CoverFront,
-                        description: "Album Cover".to_string(),
-                        data: artwork_data,
-                    };
-                    tag.add_frame(picture);
-                    tracing::info!("✅ Added album artwork to ID3 tags for {}", file_path);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to read artwork file {}: {}", artwork_path, e);
-                }
-            }
-        } else {
-            tracing::warn!("Artwork file not found: {}", artwork_path);
-        }
-    } else {
-        tracing::info!("No artwork provided for MP3: {}", file_path);
-    }
-
-    // Save tag
-    match tag.write_to_path(file_path, id3::Version::Id3v24) {
-        Ok(()) => tracing::info!("✅ ID3 tags written successfully to {}", file_path),
-        Err(e) => tracing::warn!("Failed to write ID3 tags to {}: {}", file_path, e),
-    }
-
-    Ok(())
-}
-
 async fn handle_inline_query(
     bot: Bot,
     query: InlineQuery,
@@ -1526,90 +1476,6 @@ async fn handle_inline_query(
         }
     }
 
-    Ok(())
-}
-
-/// Add FLAC PICTURE (front cover) using JPEG artwork
-fn add_flac_picture_with_artwork(flac_path: &str, artwork_path: &str) -> Result<()> {
-    use metaflac::block::{Picture, PictureType};
-    use metaflac::Tag;
-    use std::path::Path;
-
-    if !std::path::Path::new(flac_path)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("flac"))
-    {
-        tracing::debug!("Skipping FLAC cover for non-FLAC file: {}", flac_path);
-        return Ok(());
-    }
-
-    let fpath = Path::new(flac_path);
-    let apath = Path::new(artwork_path);
-    if !fpath.exists() {
-        tracing::warn!("FLAC file not found: {}", flac_path);
-        return Ok(());
-    }
-    if !apath.exists() {
-        tracing::warn!("Artwork file not found for FLAC: {}", artwork_path);
-        return Ok(());
-    }
-
-    tracing::info!("Reading FLAC metadata from: {}", flac_path);
-    // Read or create a tag
-    let mut tag = match Tag::read_from_path(fpath) {
-        Ok(t) => {
-            tracing::info!("Successfully read existing FLAC metadata");
-            t
-        }
-        Err(e) => {
-            tracing::info!("Creating new FLAC metadata (read failed: {})", e);
-            Tag::new()
-        }
-    };
-
-    // Remove existing front covers to avoid duplicates
-    tracing::info!("Removing existing front cover pictures");
-    tag.remove_picture_type(PictureType::CoverFront);
-
-    // Read image bytes
-    tracing::info!("Reading artwork file: {}", artwork_path);
-    let data = std::fs::read(apath)?;
-    tracing::info!("Read artwork: {} bytes", data.len());
-
-    // Try to infer dimensions via image crate (optional but helps some players)
-    let (width, height) = match image::load_from_memory(&data) {
-        Ok(img) => {
-            let (w, h) = (img.width(), img.height());
-            tracing::info!("Artwork dimensions: {}x{}", w, h);
-            (w, h)
-        }
-        Err(e) => {
-            tracing::warn!("Failed to decode artwork for dimensions (using 0x0): {}", e);
-            (0, 0)
-        }
-    };
-
-    let mut pic = Picture::new();
-    pic.picture_type = PictureType::CoverFront;
-    pic.mime_type = "image/jpeg".to_string();
-    pic.description = "Album Cover".to_string();
-    pic.width = width;
-    pic.height = height;
-    pic.depth = 24; // JPEG typically 24-bit
-    pic.num_colors = 0;
-    pic.data = data;
-
-    tracing::info!("Adding PICTURE block to FLAC metadata");
-    // Add to tag and write back
-    tag.push_block(metaflac::Block::Picture(pic));
-
-    // If we read from a file, prefer saving back to same path via save();
-    // otherwise, write_to_path.
-    // Use write_to_path to be explicit and robust.
-    tracing::info!("Writing FLAC metadata back to file");
-    tag.write_to_path(fpath)
-        .map_err(|e| anyhow::anyhow!("metaflac write failed: {e}"))?;
-    tracing::info!("✅ Embedded FLAC cover into {}", flac_path);
     Ok(())
 }
 

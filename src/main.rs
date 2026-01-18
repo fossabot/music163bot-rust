@@ -14,6 +14,7 @@
     clippy::format_push_string
 )]
 
+pub mod audio_buffer;
 pub mod bot;
 pub mod config;
 pub mod database;
