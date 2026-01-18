@@ -71,7 +71,7 @@ pub async fn run(config: Config) -> Result<()> {
                         bot
                     }
                     Ok(Err(e)) => {
-                        let error_msg = format!("{}", e);
+                        let error_msg = format!("{e}");
                         // Check if it's a CloudFlare challenge or other blocking issue
                         if error_msg.contains("Just a moment")
                             || error_msg.contains("cloudflare")
@@ -266,7 +266,7 @@ async fn handle_start_command(
                 bot,
                 msg,
                 state,
-                &format!("https://music.163.com/song?id={}", music_id),
+                &format!("https://music.163.com/song?id={music_id}"),
             )
             .await;
         }
@@ -358,7 +358,7 @@ async fn handle_music_command(
             }
         }
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("搜索失败: {}", e))
+            bot.send_message(msg.chat.id, format!("搜索失败: {e}"))
                 .reply_to_message_id(msg.id)
                 .await?;
             Ok(())
@@ -414,15 +414,14 @@ async fn process_music(
                     .await?;
 
                 return Ok(());
-            } else {
-                // Invalid cached file (too small), remove from database
-                tracing::warn!(
-                    "Removing invalid cached file for music_id {}: size {} bytes",
-                    music_id,
-                    cached_song.music_size
-                );
-                let _ = state.database.delete_song_by_music_id(music_id_i64).await;
             }
+            // Invalid cached file (too small), remove from database
+            tracing::warn!(
+                "Removing invalid cached file for music_id {}: size {} bytes",
+                music_id,
+                cached_song.music_size
+            );
+            let _ = state.database.delete_song_by_music_id(music_id_i64).await;
         }
     }
 
@@ -439,7 +438,7 @@ async fn process_music(
             bot.edit_message_text(
                 msg.chat.id,
                 status_msg.id,
-                format!("❌ 获取歌曲信息失败: {}", e),
+                format!("❌ 获取歌曲信息失败: {e}"),
             )
             .await?;
             return Ok(());
@@ -449,7 +448,7 @@ async fn process_music(
     // Get download URL - try FLAC first if MUSIC_U is available, then fall back to MP3
     let song_url = if state.music_api.music_u.is_some() {
         // Try FLAC quality first for VIP users
-        match state.music_api.get_song_url(music_id, 999000).await {
+        match state.music_api.get_song_url(music_id, 999_000).await {
             Ok(url) if !url.url.is_empty() => {
                 tracing::info!("Using FLAC quality for music_id {}", music_id);
                 url
@@ -460,13 +459,13 @@ async fn process_music(
                     "FLAC not available, falling back to MP3 for music_id {}",
                     music_id
                 );
-                match state.music_api.get_song_url(music_id, 320000).await {
+                match state.music_api.get_song_url(music_id, 320_000).await {
                     Ok(url) => url,
                     Err(e) => {
                         bot.edit_message_text(
                             msg.chat.id,
                             status_msg.id,
-                            format!("❌ 获取下载链接失败: {}", e),
+                            format!("❌ 获取下载链接失败: {e}"),
                         )
                         .await?;
                         return Ok(());
@@ -476,17 +475,17 @@ async fn process_music(
         }
     } else {
         // Get best available MP3 quality
-        match state.music_api.get_song_url(music_id, 320000).await {
+        match state.music_api.get_song_url(music_id, 320_000).await {
             Ok(url) => url,
             Err(_) => {
                 // Try lower quality as fallback
-                match state.music_api.get_song_url(music_id, 128000).await {
+                match state.music_api.get_song_url(music_id, 128_000).await {
                     Ok(url) => url,
                     Err(e) => {
                         bot.edit_message_text(
                             msg.chat.id,
                             status_msg.id,
-                            format!("❌ 获取下载链接失败: {}", e),
+                            format!("❌ 获取下载链接失败: {e}"),
                         )
                         .await?;
                         return Ok(());
@@ -517,12 +516,12 @@ async fn process_music(
 
     // Download and process the song
     match download_and_send_music(bot, msg, state, &song_detail, &song_url, &status_msg).await {
-        Ok(_) => {
+        Ok(()) => {
             // Delete status message
             bot.delete_message(msg.chat.id, status_msg.id).await.ok();
         }
         Err(e) => {
-            bot.edit_message_text(msg.chat.id, status_msg.id, format!("❌ 处理失败: {}", e))
+            bot.edit_message_text(msg.chat.id, status_msg.id, format!("❌ 处理失败: {e}"))
                 .await?;
         }
     }
@@ -566,7 +565,10 @@ async fn download_and_send_music(
         if let Some(ref al) = song_detail.al {
             tracing::debug!("Album info found: id={}, name={}", al.id, al.name);
             if let Some(ref pic_url) = al.pic_url {
-                if !pic_url.is_empty() {
+                if pic_url.is_empty() {
+                    tracing::warn!("Album art URL is empty for music_id {}", song_detail.id);
+                    None
+                } else {
                     tracing::info!(
                         "Starting album art download for music_id {}, pic_url: {}",
                         song_detail.id,
@@ -584,7 +586,7 @@ async fn download_and_send_music(
                         .download_album_art(pic_url, std::path::Path::new(&thumb_path))
                         .await
                     {
-                        Ok(_) => {
+                        Ok(()) => {
                             tracing::info!(
                                 "✅ Downloaded album art for music_id {}, saved to: {}",
                                 song_detail.id,
@@ -601,9 +603,6 @@ async fn download_and_send_music(
                             None
                         }
                     }
-                } else {
-                    tracing::warn!("Album art URL is empty for music_id {}", song_detail.id);
-                    None
                 }
             } else {
                 tracing::warn!("No pic_url found in album for music_id {}", song_detail.id);
@@ -670,7 +669,7 @@ async fn download_and_send_music(
         bot.edit_message_text(
             msg.chat.id,
             status_msg.id,
-            format!("❌ 下载失败: 文件太小({} bytes)", actual_size),
+            format!("❌ 下载失败: 文件太小({actual_size} bytes)"),
         )
         .await?;
         return Ok(());
@@ -689,7 +688,10 @@ async fn download_and_send_music(
         tracing::info!("Parallel cover download failed, retrying...");
         if let Some(ref al) = song_detail.al {
             if let Some(ref pic_url) = al.pic_url {
-                if !pic_url.is_empty() {
+                if pic_url.is_empty() {
+                    tracing::info!("No cover URL available");
+                    None
+                } else {
                     let thumb_filename = format!(
                         "thumb_{}_{}.jpg",
                         song_detail.id,
@@ -701,7 +703,7 @@ async fn download_and_send_music(
                         .download_album_art(pic_url, std::path::Path::new(&thumb_path))
                         .await
                     {
-                        Ok(_) => {
+                        Ok(()) => {
                             tracing::info!("✅ Successfully downloaded cover: {}", thumb_path);
                             Some(thumb_path)
                         }
@@ -710,9 +712,6 @@ async fn download_and_send_music(
                             None
                         }
                     }
-                } else {
-                    tracing::info!("No cover URL available");
-                    None
                 }
             } else {
                 None
@@ -727,16 +726,16 @@ async fn download_and_send_music(
         match file_ext {
             "mp3" => {
                 tracing::info!("🎵 Adding ID3 tags to MP3: {}", file_path);
-                match add_id3_tags_with_artwork(&file_path, song_detail, Some(cover)).await {
-                    Ok(_) => tracing::info!("✅ MP3 tags added successfully"),
+                match add_id3_tags_with_artwork(&file_path, song_detail, Some(cover)) {
+                    Ok(()) => tracing::info!("✅ MP3 tags added successfully"),
                     Err(e) => tracing::warn!("Failed to add MP3 tags: {}", e),
                 }
                 Some(cover.clone())
             }
             "flac" => {
                 tracing::info!("🎵 Adding PICTURE block to FLAC: {}", file_path);
-                match add_flac_picture_with_artwork(&file_path, cover).await {
-                    Ok(_) => tracing::info!("✅ FLAC cover embedded successfully"),
+                match add_flac_picture_with_artwork(&file_path, cover) {
+                    Ok(()) => tracing::info!("✅ FLAC cover embedded successfully"),
                     Err(e) => tracing::warn!("Failed to embed FLAC cover: {}", e),
                 }
                 Some(cover.clone())
@@ -751,8 +750,8 @@ async fn download_and_send_music(
         // 即使没有封面，MP3也要写基础标签
         if file_ext == "mp3" {
             tracing::info!("Adding basic ID3 tags to MP3 (no cover)");
-            match add_id3_tags_with_artwork(&file_path, song_detail, None).await {
-                Ok(_) => tracing::info!("✅ Basic MP3 tags added"),
+            match add_id3_tags_with_artwork(&file_path, song_detail, None) {
+                Ok(()) => tracing::info!("✅ Basic MP3 tags added"),
                 Err(e) => tracing::warn!("Failed to add basic MP3 tags: {}", e),
             }
         }
@@ -767,8 +766,7 @@ async fn download_and_send_music(
         song_album: song_detail
             .al
             .as_ref()
-            .map(|al| al.name.clone())
-            .unwrap_or_else(|| "Unknown Album".to_string()),
+            .map_or_else(|| "Unknown Album".to_string(), |al| al.name.clone()),
         file_ext: file_ext.to_string(),
         music_size: downloaded as i64,
         pic_size: 0,
@@ -777,7 +775,7 @@ async fn download_and_send_music(
         duration: (song_detail.dt.unwrap_or(0) / 1000) as i64,
         file_id: None,
         thumb_file_id: None,
-        from_user_id: msg.from().map(|u| u.id.0 as i64).unwrap_or(0),
+        from_user_id: msg.from().map_or(0, |u| u.id.0 as i64),
         from_user_name: msg
             .from()
             .and_then(|u| u.username.clone())
@@ -820,12 +818,12 @@ async fn download_and_send_music(
     let file_size = match std::fs::metadata(&file_path) {
         Ok(metadata) => {
             if metadata.len() == 0 {
-                return Err(anyhow::anyhow!("Audio file is empty: {}", file_path).into());
+                return Err(anyhow::anyhow!("Audio file is empty: {file_path}").into());
             }
             metadata.len()
         }
         Err(e) => {
-            return Err(anyhow::anyhow!("Cannot access audio file {}: {}", file_path, e).into());
+            return Err(anyhow::anyhow!("Cannot access audio file {file_path}: {e}").into());
         }
     };
 
@@ -881,7 +879,9 @@ async fn download_and_send_music(
     );
 
     // Simple approach: try sending as audio first, fallback to document if needed
-    let is_flac = file_path.ends_with(".flac");
+    let is_flac = std::path::Path::new(&file_path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("flac"));
 
     tracing::info!("File format: {}", if is_flac { "FLAC" } else { "MP3" });
 
@@ -965,7 +965,7 @@ async fn download_and_send_music(
                                 bot.edit_message_text(
                                     msg.chat.id,
                                     status_msg.id,
-                                    format!("❌ 发送失败: {}", final_err),
+                                    format!("❌ 发送失败: {final_err}"),
                                 )
                                 .await
                                 .ok();
@@ -976,7 +976,7 @@ async fn download_and_send_music(
                         bot.edit_message_text(
                             msg.chat.id,
                             status_msg.id,
-                            format!("❌ 发送失败: {}", doc_err),
+                            format!("❌ 发送失败: {doc_err}"),
                         )
                         .await
                         .ok();
@@ -1005,12 +1005,12 @@ async fn download_and_send_music(
 fn create_music_keyboard(music_id: u64, song_name: &str, artists: &str) -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new(vec![
         vec![InlineKeyboardButton::url(
-            format!("{} - {}", song_name, artists),
-            reqwest::Url::parse(&format!("https://music.163.com/song?id={}", music_id)).unwrap(),
+            format!("{song_name} - {artists}"),
+            reqwest::Url::parse(&format!("https://music.163.com/song?id={music_id}")).unwrap(),
         )],
         vec![InlineKeyboardButton::switch_inline_query(
             "分享给朋友",
-            format!("https://music.163.com/song?id={}", music_id),
+            format!("https://music.163.com/song?id={music_id}"),
         )],
     ])
 }
@@ -1079,7 +1079,7 @@ async fn handle_search_command(
                 .await?;
         }
         Err(e) => {
-            bot.edit_message_text(msg.chat.id, search_msg.id, format!("搜索失败: {}", e))
+            bot.edit_message_text(msg.chat.id, search_msg.id, format!("搜索失败: {e}"))
                 .await?;
         }
     }
@@ -1093,7 +1093,7 @@ async fn handle_about_command(
     _state: &Arc<BotState>,
 ) -> ResponseResult<()> {
     let about_text = format!(
-        r#"🎵 Music163bot-Rust v{}
+        r"🎵 Music163bot-Rust v{}
 
 一个用来下载/分享/搜索网易云歌曲的 Telegram Bot
 
@@ -1109,7 +1109,7 @@ async fn handle_about_command(
 • 🔧 高并发处理
 • 📦 轻量级部署
 
-源码：GitHub | 原版：Music163bot-Go"#,
+源码：GitHub | 原版：Music163bot-Go",
         env!("CARGO_PKG_VERSION")
     );
 
@@ -1151,7 +1151,7 @@ async fn handle_lyric_command(
                 }
             }
             Err(e) => {
-                bot.send_message(msg.chat.id, format!("搜索失败: {}", e))
+                bot.send_message(msg.chat.id, format!("搜索失败: {e}"))
                     .reply_to_message_id(msg.id)
                     .await?;
                 return Ok(());
@@ -1179,7 +1179,7 @@ async fn handle_lyric_command(
                     bot.edit_message_text(
                         msg.chat.id,
                         status_msg.id,
-                        format!("获取歌曲信息失败: {}", e),
+                        format!("获取歌曲信息失败: {e}"),
                     )
                     .await?;
                     return Ok(());
@@ -1203,7 +1203,7 @@ async fn handle_lyric_command(
             bot.delete_message(msg.chat.id, status_msg.id).await.ok();
         }
         Err(e) => {
-            bot.edit_message_text(msg.chat.id, status_msg.id, format!("获取歌词失败: {}", e))
+            bot.edit_message_text(msg.chat.id, status_msg.id, format!("获取歌词失败: {e}"))
                 .await?;
         }
     }
@@ -1216,7 +1216,7 @@ async fn handle_status_command(
     msg: &Message,
     state: &Arc<BotState>,
 ) -> ResponseResult<()> {
-    let user_id = msg.from().map(|u| u.id.0 as i64).unwrap_or(0);
+    let user_id = msg.from().map_or(0, |u| u.id.0 as i64);
     let chat_id = msg.chat.id.0;
 
     let total_count = state.database.count_total_songs().await.unwrap_or(0);
@@ -1232,17 +1232,16 @@ async fn handle_status_command(
         .unwrap_or(0);
 
     let status_text = format!(
-        r#"📊 *统计信息*
+        r"📊 *统计信息*
 
-🎵 数据库中总缓存歌曲数量: {}
-👤 当前用户缓存歌曲数量: {}
-💬 当前对话缓存歌曲数量: {}
+🎵 数据库中总缓存歌曲数量: {total_count}
+👤 当前用户缓存歌曲数量: {user_count}
+💬 当前对话缓存歌曲数量: {chat_count}
 
 🤖 Bot 运行状态: 正常
 🦀 语言: Rust
 ⚡ 框架: Teloxide
-"#,
-        total_count, user_count, chat_count
+"
     );
 
     bot.send_message(msg.chat.id, status_text)
@@ -1260,7 +1259,7 @@ async fn handle_rmcache_command(
     args: Option<String>,
 ) -> ResponseResult<()> {
     // Check if user is admin
-    let user_id = msg.from().map(|u| u.id.0 as i64).unwrap_or(0);
+    let user_id = msg.from().map_or(0, |u| u.id.0 as i64);
 
     tracing::info!(
         "rmcache command from user_id: {}, configured admins: {:?}",
@@ -1308,7 +1307,7 @@ async fn handle_rmcache_command(
                     }
                 }
                 Err(e) => {
-                    bot.send_message(msg.chat.id, format!("删除缓存失败: {}", e))
+                    bot.send_message(msg.chat.id, format!("删除缓存失败: {e}"))
                         .reply_to_message_id(msg.id)
                         .await?;
                 }
@@ -1338,7 +1337,7 @@ async fn handle_callback(
             if let Ok(music_id) = parts[1].parse::<u64>() {
                 let msg = query.message.as_ref().unwrap();
                 match process_music(&bot, msg, &state, music_id).await {
-                    Ok(_) => {
+                    Ok(()) => {
                         bot.answer_callback_query(&query.id)
                             .text("✅ 开始下载")
                             .await?;
@@ -1346,7 +1345,7 @@ async fn handle_callback(
                     Err(e) => {
                         tracing::error!("Error processing music from callback: {}", e);
                         bot.answer_callback_query(&query.id)
-                            .text(format!("❌ 失败: {}", e))
+                            .text(format!("❌ 失败: {e}"))
                             .await?;
                     }
                 }
@@ -1363,7 +1362,8 @@ async fn handle_callback(
 }
 
 /// Add ID3 tags with album artwork to MP3 file
-async fn add_id3_tags_with_artwork(
+#[allow(clippy::unnecessary_wraps)]
+fn add_id3_tags_with_artwork(
     file_path: &str,
     song_detail: &crate::music_api::SongDetail,
     artwork_path: Option<&str>,
@@ -1372,7 +1372,10 @@ async fn add_id3_tags_with_artwork(
     use std::path::Path;
 
     // Only process MP3 files
-    if !file_path.ends_with(".mp3") {
+    if !std::path::Path::new(file_path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("mp3"))
+    {
         tracing::debug!("Skipping ID3 tags for non-MP3 file: {}", file_path);
         return Ok(());
     }
@@ -1391,8 +1394,7 @@ async fn add_id3_tags_with_artwork(
     let album_name = song_detail
         .al
         .as_ref()
-        .map(|al| al.name.as_str())
-        .unwrap_or("Unknown Album");
+        .map_or("Unknown Album", |al| al.name.as_str());
     tag.set_album(album_name);
     tag.set_artist(format_artists(song_detail.ar.as_deref().unwrap_or(&[])));
 
@@ -1428,7 +1430,7 @@ async fn add_id3_tags_with_artwork(
 
     // Save tag
     match tag.write_to_path(file_path, id3::Version::Id3v24) {
-        Ok(_) => tracing::info!("✅ ID3 tags written successfully to {}", file_path),
+        Ok(()) => tracing::info!("✅ ID3 tags written successfully to {}", file_path),
         Err(e) => tracing::warn!("Failed to write ID3 tags to {}: {}", file_path, e),
     }
 
@@ -1515,7 +1517,7 @@ async fn handle_inline_query(
             let error_article = InlineQueryResultArticle::new(
                 "search_error",
                 "搜索失败",
-                InputMessageContent::Text(InputMessageContentText::new(format!("搜索失败: {}", e))),
+                InputMessageContent::Text(InputMessageContentText::new(format!("搜索失败: {e}"))),
             )
             .description("搜索失败，请稍后重试");
 
@@ -1528,12 +1530,15 @@ async fn handle_inline_query(
 }
 
 /// Add FLAC PICTURE (front cover) using JPEG artwork
-async fn add_flac_picture_with_artwork(flac_path: &str, artwork_path: &str) -> Result<()> {
+fn add_flac_picture_with_artwork(flac_path: &str, artwork_path: &str) -> Result<()> {
     use metaflac::block::{Picture, PictureType};
     use metaflac::Tag;
     use std::path::Path;
 
-    if !flac_path.ends_with(".flac") {
+    if !std::path::Path::new(flac_path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("flac"))
+    {
         tracing::debug!("Skipping FLAC cover for non-FLAC file: {}", flac_path);
         return Ok(());
     }
@@ -1603,7 +1608,7 @@ async fn add_flac_picture_with_artwork(flac_path: &str, artwork_path: &str) -> R
     // Use write_to_path to be explicit and robust.
     tracing::info!("Writing FLAC metadata back to file");
     tag.write_to_path(fpath)
-        .map_err(|e| anyhow::anyhow!("metaflac write failed: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("metaflac write failed: {e}"))?;
     tracing::info!("✅ Embedded FLAC cover into {}", flac_path);
     Ok(())
 }
@@ -1612,7 +1617,7 @@ async fn add_flac_picture_with_artwork(flac_path: &str, artwork_path: &str) -> R
 /// 「Title」- Artists
 /// 专辑: Album
 /// #网易云音乐 #ext {sizeMB}MB {kbps}kbps
-/// via @BotName
+/// via @`BotName`
 fn build_caption(
     title: &str,
     artists: &str,
@@ -1627,7 +1632,6 @@ fn build_caption(
     let kbps = (bitrate_bps as f64) / 1000.0;
     let ext = file_ext.to_lowercase();
     format!(
-        "「{}」- {}\n专辑: {}\n#网易云音乐 #{} {:.2}MB {:.2}kbps\nvia @{}",
-        title, artists, album, ext, size_mb, kbps, bot_username,
+        "「{title}」- {artists}\n专辑: {album}\n#网易云音乐 #{ext} {size_mb:.2}MB {kbps:.2}kbps\nvia @{bot_username}",
     )
 }

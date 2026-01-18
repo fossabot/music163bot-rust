@@ -85,7 +85,7 @@ impl Config {
                 let full_key = if current_section.is_empty() {
                     key
                 } else {
-                    format!("{}.{}", current_section, key)
+                    format!("{current_section}.{key}")
                 };
 
                 config_map.insert(full_key, value);
@@ -94,25 +94,25 @@ impl Config {
 
         // Map configuration values
         if let Some(token) = config_map.get("bot.token") {
-            config.bot_token = token.clone();
+            config.bot_token.clone_from(token);
         }
 
         config.music_u = config_map.get("music.music_u").cloned();
 
         if let Some(api) = config_map.get("bot.api") {
-            config.bot_api = api.clone();
+            config.bot_api.clone_from(api);
         }
 
         if let Some(api) = config_map.get("music.api") {
-            config.music_api = api.clone();
+            config.music_api.clone_from(api);
         }
 
         if let Some(url) = config_map.get("database.url") {
-            config.database = url.clone();
+            config.database.clone_from(url);
         }
 
         if let Some(dir) = config_map.get("download.dir") {
-            config.cache_dir = dir.clone();
+            config.cache_dir.clone_from(dir);
         }
 
         if let Some(admins) = config_map.get("bot.botadmin") {
@@ -135,11 +135,11 @@ impl Config {
         }
 
         if let Some(db) = config_map.get("database") {
-            config.database = db.clone();
+            config.database.clone_from(db);
         }
 
         if let Some(level) = config_map.get("loglevel") {
-            config.log_level = level.clone();
+            config.log_level.clone_from(level);
         }
 
         if let Some(auto_update) = config_map.get("autoupdate") {

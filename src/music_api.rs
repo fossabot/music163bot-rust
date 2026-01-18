@@ -109,6 +109,7 @@ pub struct SearchSong {
 }
 
 impl MusicApi {
+    #[must_use]
     pub fn new(music_u: Option<String>, base_url: String) -> Self {
         let mut client_builder = Client::builder();
 
@@ -138,10 +139,10 @@ impl MusicApi {
     fn build_eapi_cookie(&self) -> String {
         let device_id = Uuid::new_v4().simple().to_string();
         let appver = "9.3.40";
-        let buildver = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs().to_string())
-            .unwrap_or_else(|_| "0".to_string());
+        let buildver = SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(
+            |_| "0".to_string(),
+            |duration| duration.as_secs().to_string(),
+        );
         let mut cookie_parts = vec![
             format!("deviceId={}", device_id),
             format!("appver={}", appver),
@@ -151,7 +152,7 @@ impl MusicApi {
         ];
 
         if let Some(music_u) = &self.music_u {
-            cookie_parts.push(format!("MUSIC_U={}", music_u));
+            cookie_parts.push(format!("MUSIC_U={music_u}"));
         } else {
             cookie_parts.push("MUSIC_A=4ee5f776c9ed1e4d5f031b09e084c6cb333e43ee4a841afeebbef9bbf4b7e4152b51ff20ecb9e8ee9e89ab23044cf50d1609e4781e805e73a138419e5583bc7fd1e5933c52368d9127ba9ce4e2f233bf5a77ba40ea6045ae1fc612ead95d7b0e0edf70a74334194e1a190979f5fc12e9968c3666a981495b33a649814e309366".to_string());
         }
@@ -161,9 +162,9 @@ impl MusicApi {
 
     fn eapi_splice(path: &str, json: &str) -> String {
         let marker = "36cd479b6b5";
-        let text = format!("nobody{}use{}md5forencrypt", path, json);
+        let text = format!("nobody{path}use{json}md5forencrypt");
         let digest = format!("{:x}", md5_compute(text.as_bytes()));
-        format!("{}-{}-{}-{}-{}", path, marker, json, marker, digest)
+        format!("{path}-{marker}-{json}-{marker}-{digest}")
     }
 
     fn eapi_encrypt(data: &str) -> String {
@@ -192,7 +193,7 @@ impl MusicApi {
     fn eapi_params(path: &str, json: &str) -> String {
         let data = Self::eapi_splice(path, json);
         let encrypted = Self::eapi_encrypt(&data);
-        format!("params={}", encrypted)
+        format!("params={encrypted}")
     }
 
     fn choose_eapi_user_agent() -> &'static str {
@@ -204,13 +205,13 @@ impl MusicApi {
         let url = format!("{}/api/song/detail", self.base_url);
         let mut params = HashMap::new();
         params.insert("id", song_id.to_string());
-        params.insert("ids", format!("[{}]", song_id));
+        params.insert("ids", format!("[{song_id}]"));
 
         let mut request = self.client.post(url).form(&params);
 
         // Add MUSIC_U cookie if available
         if let Some(music_u) = &self.music_u {
-            request = request.header("Cookie", format!("MUSIC_U={}", music_u));
+            request = request.header("Cookie", format!("MUSIC_U={music_u}"));
         }
 
         let response = request.send().await?;
@@ -233,13 +234,13 @@ impl MusicApi {
     pub async fn get_song_url(&self, song_id: u64, br: u64) -> Result<SongUrl> {
         let url = format!("{}/api/song/enhance/player/url", self.base_url);
         let mut params = HashMap::new();
-        params.insert("ids", format!("[{}]", song_id));
+        params.insert("ids", format!("[{song_id}]"));
         params.insert("br", br.to_string());
 
         let mut request = self.client.post(url).form(&params);
 
         if let Some(music_u) = &self.music_u {
-            request = request.header("Cookie", format!("MUSIC_U={}", music_u));
+            request = request.header("Cookie", format!("MUSIC_U={music_u}"));
         }
 
         let response = request.send().await?;
@@ -265,7 +266,7 @@ impl MusicApi {
         let mut request = self.client.get(&url);
 
         if let Some(music_u) = &self.music_u {
-            request = request.header("Cookie", format!("MUSIC_U={}", music_u));
+            request = request.header("Cookie", format!("MUSIC_U={music_u}"));
         }
 
         let response = request.send().await?;
@@ -280,8 +281,7 @@ impl MusicApi {
 
         let lyric = data
             .lrc
-            .map(|l| l.lyric)
-            .unwrap_or_else(|| "No lyrics available".to_string());
+            .map_or_else(|| "No lyrics available".to_string(), |l| l.lyric);
 
         Ok(lyric)
     }
@@ -339,7 +339,7 @@ impl MusicApi {
 
         // Add MUSIC_U cookie if available
         if let Some(music_u) = &self.music_u {
-            request = request.header("Cookie", format!("MUSIC_U={}", music_u));
+            request = request.header("Cookie", format!("MUSIC_U={music_u}"));
         }
 
         // Add comprehensive headers to avoid 403 errors
@@ -394,7 +394,7 @@ impl MusicApi {
         tokio::task::spawn_blocking(move || {
             // Load and resize image
             let img = image::load_from_memory(&bytes)
-                .map_err(|e| BotError::MusicApi(format!("Failed to decode image: {}", e)))?;
+                .map_err(|e| BotError::MusicApi(format!("Failed to decode image: {e}")))?;
 
             // Resize to 320x320 with black padding (like the original Go project)
             let resized = resize_image_with_padding(img, 320, 320);
@@ -402,16 +402,17 @@ impl MusicApi {
             // Save as JPEG
             resized
                 .save_with_format(&output_path_buf, ImageFormat::Jpeg)
-                .map_err(|e| BotError::MusicApi(format!("Failed to save image: {}", e)))?;
+                .map_err(|e| BotError::MusicApi(format!("Failed to save image: {e}")))?;
 
             Ok(())
         })
         .await
-        .map_err(|e| BotError::MusicApi(format!("Image processing task panicked: {}", e)))?
+        .map_err(|e| BotError::MusicApi(format!("Image processing task panicked: {e}")))?
     }
 }
 
 /// Parse artists into a formatted string
+#[must_use]
 pub fn format_artists(artists: &[Artist]) -> String {
     artists
         .iter()

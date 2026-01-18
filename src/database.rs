@@ -40,11 +40,11 @@ impl Database {
             }
         }
 
-        let pool = SqlitePool::connect(&format!("sqlite://{}", database_url)).await?;
+        let pool = SqlitePool::connect(&format!("sqlite://{database_url}")).await?;
 
         // Create tables if they don't exist
         sqlx::query(
-            r#"
+            r"
             CREATE TABLE IF NOT EXISTS song_infos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 music_id INTEGER UNIQUE NOT NULL,
@@ -66,7 +66,7 @@ impl Database {
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
-            "#,
+            ",
         )
         .execute(&pool)
         .await?;
@@ -119,7 +119,7 @@ impl Database {
     /// Save or update song info
     pub async fn save_song_info(&self, song_info: &SongInfo) -> Result<i64> {
         let result = sqlx::query(
-            r#"
+            r"
             INSERT INTO song_infos (
                 music_id, song_name, song_artists, song_album, file_ext,
                 music_size, pic_size, emb_pic_size, bit_rate, duration,
@@ -140,7 +140,7 @@ impl Database {
                 file_id = excluded.file_id,
                 thumb_file_id = excluded.thumb_file_id,
                 updated_at = CURRENT_TIMESTAMP
-            "#,
+            ",
         )
         .bind(song_info.music_id)
         .bind(&song_info.song_name)
@@ -164,7 +164,7 @@ impl Database {
         Ok(result.last_insert_rowid())
     }
 
-    /// Update file_id and thumb_file_id for a song
+    /// Update `file_id` and `thumb_file_id` for a song
     pub async fn update_file_ids(
         &self,
         music_id: i64,

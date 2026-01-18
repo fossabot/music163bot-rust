@@ -1,17 +1,17 @@
-use once_cell::sync::Lazy;
 use regex::Regex;
 use std::path::Path;
 
 /// Global regex patterns for URL parsing
-static SONG_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"music\.163\.com/.*?song.*?[?&]id=(\d+)").unwrap());
+static SONG_REGEX: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(r"music\.163\.com/.*?song.*?[?&]id=(\d+)").unwrap());
 
-static SHARE_LINK_REGEX: Lazy<Regex> = Lazy::new(|| {
+static SHARE_LINK_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     Regex::new(r"(http|https)://[\w\-_]+(\.[\w\-_]+)+([\w\-.,@?^=%&:/~+#]*[\w\-@?^=%&/~+#])?")
         .unwrap()
 });
 
-static NUMBER_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\d+").unwrap());
+static NUMBER_REGEX: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(r"\d+").unwrap());
 
 /// Extract music ID from text
 pub fn parse_music_id(text: &str) -> Option<u64> {
@@ -50,6 +50,7 @@ pub fn ensure_dir(path: &str) -> std::io::Result<()> {
 }
 
 /// Clean filename for safe file operations
+#[must_use]
 pub fn clean_filename(name: &str) -> String {
     name.chars()
         .map(|c| match c {
@@ -80,12 +81,13 @@ pub fn verify_md5(file_path: &str, expected_md5: &str) -> anyhow::Result<bool> {
     }
 
     let result = hasher.compute();
-    let hash = format!("{:x}", result);
+    let hash = format!("{result:x}");
 
     Ok(hash.eq_ignore_ascii_case(expected_md5))
 }
 
 /// Format file size in human readable format
+#[must_use]
 pub fn format_file_size(size: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
     let mut size = size as f64;
@@ -100,10 +102,11 @@ pub fn format_file_size(size: u64) -> String {
 }
 
 /// Format duration in human readable format
+#[must_use]
 pub fn format_duration(seconds: u64) -> String {
     let minutes = seconds / 60;
     let seconds = seconds % 60;
-    format!("{:02}:{:02}", minutes, seconds)
+    format!("{minutes:02}:{seconds:02}")
 }
 
 /// Check if an error is a timeout error

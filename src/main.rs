@@ -1,3 +1,19 @@
+#![warn(clippy::all, clippy::pedantic)]
+// Allow certain pedantic warnings that are acceptable for this codebase
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::too_many_lines,
+    clippy::struct_excessive_bools,
+    clippy::doc_markdown,
+    clippy::needless_pass_by_value,
+    clippy::format_push_string
+)]
+
 pub mod bot;
 pub mod config;
 pub mod database;
