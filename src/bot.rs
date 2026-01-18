@@ -572,29 +572,31 @@ async fn download_and_send_music(
                         song_detail.id,
                         pic_url
                     );
-                    let thumb_filename = format!(
-                        "thumb_{}_{}.jpg",
-                        song_detail.id,
-                        chrono::Utc::now().timestamp()
-                    );
-                    let thumb_path = format!("{}/{}", state.config.cache_dir, thumb_filename);
 
-                    match state
-                        .music_api
-                        .download_album_art(pic_url, std::path::Path::new(&thumb_path))
-                        .await
-                    {
-                        Ok(()) => {
+                    match state.music_api.download_album_art_data(pic_url).await {
+                        Ok(data) => {
                             tracing::info!(
-                                "✅ Downloaded album art for music_id {}, saved to: {}",
+                                "Downloaded album art for music_id {} ({} bytes)",
                                 song_detail.id,
-                                thumb_path
+                                data.len()
                             );
-                            Some(thumb_path)
+                            let thumb_filename = format!(
+                                "thumb_{}_{}.jpg",
+                                song_detail.id,
+                                chrono::Utc::now().timestamp()
+                            );
+                            ThumbnailBuffer::new(
+                                &state.config,
+                                data,
+                                &state.config.cache_dir,
+                                &thumb_filename,
+                            )
+                            .await
+                            .ok()
                         }
                         Err(e) => {
                             tracing::warn!(
-                                "❌ Failed to download album art for music_id {}: {}",
+                                "Failed to download album art for music_id {}: {}",
                                 song_detail.id,
                                 e
                             );
@@ -651,7 +653,7 @@ async fn download_and_send_music(
     };
 
     // Execute both downloads in parallel
-    let (downloaded_result, thumbnail_path) = tokio::join!(audio_future, artwork_future);
+    let (downloaded_result, thumbnail_buffer) = tokio::join!(audio_future, artwork_future);
     let (mut audio_buffer, downloaded) = downloaded_result?;
 
     tracing::info!(
@@ -665,7 +667,11 @@ async fn download_and_send_music(
     );
     tracing::info!(
         "Cover download result: {}",
-        thumbnail_path.as_deref().unwrap_or("None")
+        if thumbnail_buffer.is_some() {
+            "Available"
+        } else {
+            "None"
+        }
     );
 
     // Validate file size
@@ -693,51 +699,6 @@ async fn download_and_send_music(
 
     // 封面处理：先确保有封面文件，再根据格式处理
     tracing::info!("Processing cover art for {} format", file_ext);
-
-    // Convert thumbnail path to ThumbnailBuffer if available
-    let thumbnail_buffer: Option<ThumbnailBuffer> = if let Some(ref thumb_path) = thumbnail_path {
-        Some(ThumbnailBuffer::from_path(std::path::PathBuf::from(
-            thumb_path,
-        )))
-    } else {
-        // 并行下载失败，重新尝试下载封面
-        tracing::info!("Parallel cover download failed, retrying...");
-        if let Some(ref al) = song_detail.al {
-            if let Some(ref pic_url) = al.pic_url {
-                if pic_url.is_empty() {
-                    tracing::info!("No cover URL available");
-                    None
-                } else {
-                    let thumb_filename = format!(
-                        "thumb_{}_{}.jpg",
-                        song_detail.id,
-                        chrono::Utc::now().timestamp()
-                    );
-                    let thumb_path = format!("{}/{}", state.config.cache_dir, thumb_filename);
-                    match state
-                        .music_api
-                        .download_album_art(pic_url, std::path::Path::new(&thumb_path))
-                        .await
-                    {
-                        Ok(()) => {
-                            tracing::info!("Successfully downloaded cover: {}", thumb_path);
-                            Some(ThumbnailBuffer::from_path(std::path::PathBuf::from(
-                                thumb_path,
-                            )))
-                        }
-                        Err(e) => {
-                            tracing::warn!("Cover download failed: {}", e);
-                            None
-                        }
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    };
 
     // Get artwork data for embedding
     let artwork_data = if let Some(ref thumb_buf) = thumbnail_buffer {

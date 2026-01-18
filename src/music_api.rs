@@ -8,6 +8,7 @@ use md5::compute as md5_compute;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -360,6 +361,13 @@ impl MusicApi {
 
     /// Download and resize album art image
     pub async fn download_album_art(&self, pic_url: &str, output_path: &Path) -> Result<()> {
+        let data = self.download_album_art_data(pic_url).await?;
+        tokio::fs::write(output_path, data).await?;
+        Ok(())
+    }
+
+    /// Download and resize album art image into memory
+    pub async fn download_album_art_data(&self, pic_url: &str) -> Result<Vec<u8>> {
         if pic_url.is_empty() {
             return Err(BotError::MusicApi("Empty album art URL".to_string()));
         }
@@ -387,8 +395,7 @@ impl MusicApi {
             )));
         }
 
-        let bytes = response.bytes().await?;
-        let output_path_buf = output_path.to_path_buf();
+        let bytes = response.bytes().await?.to_vec();
 
         // Offload image processing to a blocking thread to avoid blocking the async runtime
         tokio::task::spawn_blocking(move || {
@@ -399,12 +406,13 @@ impl MusicApi {
             // Resize to 320x320 with black padding (like the original Go project)
             let resized = resize_image_with_padding(img, 320, 320);
 
-            // Save as JPEG
+            // Save as JPEG into memory
+            let mut cursor = Cursor::new(Vec::new());
             resized
-                .save_with_format(&output_path_buf, ImageFormat::Jpeg)
-                .map_err(|e| BotError::MusicApi(format!("Failed to save image: {e}")))?;
+                .write_to(&mut cursor, ImageFormat::Jpeg)
+                .map_err(|e| BotError::MusicApi(format!("Failed to encode image: {e}")))?;
 
-            Ok(())
+            Ok(cursor.into_inner())
         })
         .await
         .map_err(|e| BotError::MusicApi(format!("Image processing task panicked: {e}")))?
