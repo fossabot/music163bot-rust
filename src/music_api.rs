@@ -168,7 +168,7 @@ impl MusicApi {
 
     fn eapi_encrypt(data: &str) -> String {
         let block_size = 16;
-        let data_len = data.as_bytes().len();
+        let data_len = data.len();
         let padded_len = ((data_len + block_size) / block_size) * block_size;
         let mut buf = vec![0u8; padded_len];
         buf[..data_len].copy_from_slice(data.as_bytes());

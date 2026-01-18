@@ -27,6 +27,10 @@
 - Rust 1.70+ 
 - SQLite3
 
+### 下载
+
+从 [Releases](https://github.com/Lemonawa/music163bot-rust/releases) 页面下载最新的预编译版本，或者从源码构建。
+
 ### 构建
 
 ```bash
@@ -34,6 +38,8 @@ git clone https://github.com/Lemonawa/music163bot-rust.git
 cd music163bot-rust
 cargo build --release
 ```
+
+构建完成后，可执行文件位于 `target/release/music163bot-rust`。
 
 ### 配置
 
